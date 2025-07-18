@@ -1,0 +1,80 @@
+name: 将DockerHub镜像复制到GHCR.IO
+
+permissions:
+  contents: read
+  packages: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      dockerhub_image:
+        description: '要拉取的源镜像名称 (例如: nginx 或 ghcr.io/owner/image)'
+        required: true
+        default: 'nginx'
+      tag:
+        description: 'Docker 镜像标签 (默认：latest)'
+        required: false
+        default: 'latest'
+      ghcr_image:
+        description: '推送到GHCR.IO的目标镜像名称'
+        required: true
+        default: 'myimage'
+      custom_tag:
+        description: '（可选）手动指定推送到 GHCR 的标签。留空则使用原始标签。'
+        required: false
+      add_latest_tag:
+        description: '当原始标签不为 "latest" 时，是否额外添加 "latest" 标签?'
+        required: true
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+        default: 'true'
+
+env:
+  REGISTRY: ghcr.io
+  # 这里使用 ghcr_image 作为目标镜像名
+  IMAGE_NAME: ${{ inputs.ghcr_image }}  
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 登录到GitHub容器注册表 (用于推送)
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 从源仓库拉取Docker镜像
+        run: |
+          echo "正在拉取镜像: ${{ inputs.dockerhub_image }}:${{ inputs.tag }}"
+          docker pull ${{ inputs.dockerhub_image }}:${{ inputs.tag }}
+
+      - name: 设置小写的仓库所有者名称
+        run: echo "OWNER_LOWER=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
+      - name: 确定最终的镜像标签
+        id: final_tag
+        run: |
+          if [ -n "${{ inputs.custom_tag }}" ]; then
+            echo "value=${{ inputs.custom_tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "value=${{ inputs.tag }}" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: 为推送到GHCR标记镜像
+        run: |
+          docker tag ${{ inputs.dockerhub_image }}:${{ inputs.tag }} ${{ env.REGISTRY }}/${{ env.OWNER_LOWER }}/${{ env.IMAGE_NAME }}:${{ steps.final_tag.outputs.value }}
+      
+      - name: 推送镜像到仓库
+        run: |
+          docker push ${{ env.REGISTRY }}/${{ env.OWNER_LOWER }}/${{ env.IMAGE_NAME }}:${{ steps.final_tag.outputs.value }}
+      
+      - name: （如果需要）为镜像添加 "latest" 标签并推送
+        if: inputs.add_latest_tag == 'true' && steps.final_tag.outputs.value != 'latest'
+        run: |
+          docker tag ${{ inputs.dockerhub_image }}:${{ inputs.tag }} ${{ env.REGISTRY }}/${{ env.OWNER_LOWER }}/${{ env.IMAGE_NAME }}:latest
+          docker push ${{ env.REGISTRY }}/${{ env.OWNER_LOWER }}/${{ env.IMAGE_NAME }}:latest
